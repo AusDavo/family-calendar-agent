@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from telegram import Update
+from telegram.constants import ParseMode
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -48,7 +49,7 @@ async def today_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         today_str = now.strftime("%Y-%m-%d")
         events = await asyncio.to_thread(get_events, today_str, today_str)
         reply = await summarize_events(events, "today's events")
-        await update.message.reply_text(reply)
+        await update.message.reply_text(reply, parse_mode=ParseMode.MARKDOWN)
     except (CalendarError, LLMError) as e:
         logger.error("Error in /today: %s", e)
         await update.message.reply_text(
@@ -66,7 +67,7 @@ async def week_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             get_events, monday.strftime("%Y-%m-%d"), sunday.strftime("%Y-%m-%d")
         )
         reply = await summarize_events(events, "this week's events")
-        await update.message.reply_text(reply)
+        await update.message.reply_text(reply, parse_mode=ParseMode.MARKDOWN)
     except (CalendarError, LLMError) as e:
         logger.error("Error in /week: %s", e)
         await update.message.reply_text(
@@ -78,7 +79,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await update.message.chat.send_action("typing")
     try:
         reply = await answer_question(update.message.text)
-        await update.message.reply_text(reply)
+        await update.message.reply_text(reply, parse_mode=ParseMode.MARKDOWN)
     except (CalendarError, LLMError) as e:
         logger.error("Error handling message: %s", e)
         await update.message.reply_text(
