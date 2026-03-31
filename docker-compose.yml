@@ -1,0 +1,7 @@
+services:
+  bot:
+    build: .
+    container_name: family-calendar-agent
+    restart: unless-stopped
+    env_file:
+      - .env
