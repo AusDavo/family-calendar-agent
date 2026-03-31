@@ -91,6 +91,15 @@ def main() -> None:
 
     token = os.environ["TELEGRAM_BOT_TOKEN"]
     allowed = os.environ.get("TELEGRAM_ALLOWED_USERS", "")
+    for uid in allowed.split(","):
+        uid = uid.strip()
+        if not uid:
+            continue
+        if not uid.isdigit():
+            raise ValueError(
+                f"TELEGRAM_ALLOWED_USERS must be numeric user IDs, got '{uid}'. "
+                "Message @userinfobot on Telegram to find your ID."
+            )
     ALLOWED_USERS = {int(uid.strip()) for uid in allowed.split(",") if uid.strip()}
 
     if not ALLOWED_USERS:
