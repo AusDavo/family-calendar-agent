@@ -36,8 +36,10 @@ def _get_client() -> caldav.DAVClient:
 
 
 def _get_calendars(client: caldav.DAVClient) -> list[caldav.Calendar]:
-    principal = client.principal()
-    calendars = principal.calendars()
+    # Use calendar_home_set directly from the URL to avoid PROPFIND
+    # principal discovery which fails with niquests + Fastmail redirects
+    calendar_home = caldav.CalendarSet(client=client, url=os.environ["CALDAV_URL"])
+    calendars = calendar_home.calendars()
 
     filter_names = os.environ.get("CALENDAR_NAMES", "").strip()
     if filter_names:
