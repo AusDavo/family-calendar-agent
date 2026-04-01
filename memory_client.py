@@ -32,7 +32,7 @@ async def store_memory(
     try:
         async with Client(transport=_transport()) as client:
             result = await client.call_tool("store_memory", args)
-            return result[0].text if result else '{"status": "stored"}'
+            return result.content[0].text if result.content else '{"status": "stored"}'
     except Exception as e:
         logger.error("Failed to store memory: %s", e)
         return f'{{"status": "error", "message": "{e}"}}'
@@ -51,7 +51,7 @@ async def search_memory(
     try:
         async with Client(transport=_transport()) as client:
             result = await client.call_tool("search_memory", args)
-            return result[0].text if result else '{"count": 0, "results": []}'
+            return result.content[0].text if result.content else '{"count": 0, "results": []}'
     except Exception as e:
         logger.error("Failed to search memory: %s", e)
         return f'{{"count": 0, "results": [], "error": "{e}"}}'

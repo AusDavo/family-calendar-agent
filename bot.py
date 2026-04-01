@@ -300,6 +300,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await update.message.reply_text(confirmation, parse_mode=ParseMode.MARKDOWN)
             return
 
+        # Guard against empty replies (e.g. when Claude only made tool calls)
+        if not reply or not reply.strip():
+            reply = "Done."
+
         # Add exchange to history
         history.append({"role": "user", "content": text})
         history.append({"role": "assistant", "content": reply})
