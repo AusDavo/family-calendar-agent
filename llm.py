@@ -21,6 +21,9 @@ Rules:
 - Be concise and direct. No preamble.
 - Use the user's timezone ({timezone}) for all dates and times.
 - Today is {today}.
+- This week: {this_week}
+- Next week: {next_week}
+- ALWAYS use the date reference above when the user mentions a day of the week. Do NOT calculate dates yourself.
 - When you need calendar data, call the get_calendar_events tool with appropriate start and end dates.
 - For questions about "today", fetch just today. For "this week", fetch Monday through Sunday of the current week. For "next week", fetch the following Monday through Sunday. For "this month", fetch the rest of the current month. Default to the next 7 days if unclear.
 - Format times in 12-hour format (e.g., 2:30 PM).
@@ -178,10 +181,28 @@ class LLMError(Exception):
 def _build_system_prompt(calendar_names: list[str] | None = None) -> str:
     now = datetime.now(TIMEZONE)
     cal_str = ", ".join(calendar_names) if calendar_names else "(unknown)"
+
+    # Build a day-of-week reference for the current week so the model
+    # doesn't have to do date arithmetic (it gets it wrong frequently)
+    from datetime import timedelta
+    monday = now - timedelta(days=now.weekday())
+    week_ref = ", ".join(
+        f"{(monday + timedelta(days=i)).strftime('%A')} = {(monday + timedelta(days=i)).strftime('%B %-d')}"
+        for i in range(7)
+    )
+    # Also next week
+    next_monday = monday + timedelta(days=7)
+    next_week_ref = ", ".join(
+        f"{(next_monday + timedelta(days=i)).strftime('%A')} = {(next_monday + timedelta(days=i)).strftime('%B %-d')}"
+        for i in range(7)
+    )
+
     return SYSTEM_PROMPT.format(
         timezone=str(TIMEZONE),
         today=now.strftime("%A, %B %d, %Y at %I:%M %p %Z"),
         calendars=cal_str,
+        this_week=week_ref,
+        next_week=next_week_ref,
     )
 
 
