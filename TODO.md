@@ -7,6 +7,12 @@ Phase one (read-only calendar queries) is complete. What's next:
 - [ ] Proactive reminders — configurable alerts before events
 - [ ] Multi-tool-call support — let Claude call the calendar tool multiple times per question
 
+## Phase 2.5 — Memory
+- [x] Deploy dedicated memory-server instance in Docker Compose stack
+- [x] Integrate memory tools into the bot's LLM tool set
+- [ ] Store family context — preferences, recurring commitments, meal plans, kids' activities
+- [ ] Recall relevant memories when answering questions ("What does Sam have on Tuesdays?")
+
 ## Phase 3 — Create & manage events
 - [x] Create events via chat — "Add dentist Thursday at 2pm"
 - [ ] Move / reschedule events — "Move Friday's meeting to Monday"

@@ -33,6 +33,13 @@ Event creation rules:
 - If no end time is given, default to 1 hour duration for timed events.
 - For all-day events, set all_day to true and use date-only start/end.
 - Always call the create_calendar_event tool — never just describe what you would create.
+
+Memory rules:
+- You have a long-term memory store for family context.
+- Use search_memory BEFORE answering questions that could benefit from stored context (e.g. preferences, routines, recurring activities, meal plans, family member details).
+- Use store_memory when the user shares durable information worth remembering: family preferences, kids' schedules, recurring commitments, meal plans, doctor names, etc.
+- Do NOT store trivial or one-off information. Focus on reusable family knowledge.
+- When you find relevant memories, weave them naturally into your response.
 """
 
 CALENDAR_TOOL = {
@@ -93,7 +100,46 @@ CREATE_EVENT_TOOL = {
     },
 }
 
-TOOLS = [CALENDAR_TOOL, CREATE_EVENT_TOOL]
+STORE_MEMORY_TOOL = {
+    "name": "store_memory",
+    "description": "Store a piece of information for long-term recall. Use this to remember family context, preferences, recurring activities, meal plans, or anything the user shares that might be useful later.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "content": {
+                "type": "string",
+                "description": "The information to remember. Write it as a self-contained statement.",
+            },
+            "tags": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional tags for categorization (e.g. 'preference', 'kid-activity', 'meal-plan')",
+            },
+        },
+        "required": ["content"],
+    },
+}
+
+SEARCH_MEMORY_TOOL = {
+    "name": "search_memory",
+    "description": "Search stored memories for relevant context. Use this when the user's question might benefit from previously stored information — family preferences, routines, past decisions, etc.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "Natural language description of what you're looking for.",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Max results to return (default 5)",
+            },
+        },
+        "required": ["query"],
+    },
+}
+
+TOOLS = [CALENDAR_TOOL, CREATE_EVENT_TOOL, STORE_MEMORY_TOOL, SEARCH_MEMORY_TOOL]
 
 
 class LLMError(Exception):
@@ -161,6 +207,30 @@ async def answer_question(question: str) -> str | dict:
                         "type": "tool_result",
                         "tool_use_id": block.id,
                         "content": events_text or "No events found in this date range.",
+                    })
+
+                elif block.name == "store_memory":
+                    from memory_client import store_memory
+                    result = await store_memory(
+                        content=block.input["content"],
+                        tags=block.input.get("tags"),
+                    )
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": result,
+                    })
+
+                elif block.name == "search_memory":
+                    from memory_client import search_memory
+                    result = await search_memory(
+                        query=block.input["query"],
+                        limit=block.input.get("limit", 5),
+                    )
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": result,
                     })
 
                 elif block.name == "create_calendar_event":
