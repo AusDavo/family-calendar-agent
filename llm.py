@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo
 
 from anthropic import AsyncAnthropic
 
-from calendar_client import get_events, format_events_for_llm, CalendarEvent
+from calendar_client import get_events, format_events_for_llm, get_calendar_names, CalendarEvent
 
 logger = logging.getLogger(__name__)
 
@@ -15,7 +15,7 @@ client = AsyncAnthropic()
 
 MODEL = "claude-sonnet-4-20250514"
 
-SYSTEM_PROMPT = """You are a helpful family calendar assistant. You answer questions about the user's calendar events.
+SYSTEM_PROMPT = """You are a helpful family calendar assistant. You answer questions about the user's calendar events and can create new events.
 
 Rules:
 - Be concise and direct. No preamble.
@@ -26,6 +26,13 @@ Rules:
 - Format times in 12-hour format (e.g., 2:30 PM).
 - If there are no events, say so clearly.
 - If asked about free/busy time, analyze gaps between events.
+
+Event creation rules:
+- Available calendars: {calendars}
+- When asked to create an event, pick the most appropriate calendar based on context.
+- If no end time is given, default to 1 hour duration for timed events.
+- For all-day events, set all_day to true and use date-only start/end.
+- Always call the create_calendar_event tool — never just describe what you would create.
 """
 
 CALENDAR_TOOL = {
@@ -47,16 +54,59 @@ CALENDAR_TOOL = {
     },
 }
 
+CREATE_EVENT_TOOL = {
+    "name": "create_calendar_event",
+    "description": "Create a new calendar event. Use this when the user asks to add, create, or schedule an event.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "calendar_name": {
+                "type": "string",
+                "description": "Name of the calendar to add the event to",
+            },
+            "summary": {
+                "type": "string",
+                "description": "Event title",
+            },
+            "start_datetime": {
+                "type": "string",
+                "description": "Start in ISO 8601 format (YYYY-MM-DDTHH:MM:SS for timed, YYYY-MM-DD for all-day)",
+            },
+            "end_datetime": {
+                "type": "string",
+                "description": "End in ISO 8601 format (YYYY-MM-DDTHH:MM:SS for timed, YYYY-MM-DD for all-day)",
+            },
+            "all_day": {
+                "type": "boolean",
+                "description": "Whether this is an all-day event",
+            },
+            "location": {
+                "type": "string",
+                "description": "Event location (optional)",
+            },
+            "description": {
+                "type": "string",
+                "description": "Event description (optional)",
+            },
+        },
+        "required": ["calendar_name", "summary", "start_datetime", "end_datetime", "all_day"],
+    },
+}
+
+TOOLS = [CALENDAR_TOOL, CREATE_EVENT_TOOL]
+
 
 class LLMError(Exception):
     pass
 
 
-def _build_system_prompt() -> str:
+def _build_system_prompt(calendar_names: list[str] | None = None) -> str:
     now = datetime.now(TIMEZONE)
+    cal_str = ", ".join(calendar_names) if calendar_names else "(unknown)"
     return SYSTEM_PROMPT.format(
         timezone=str(TIMEZONE),
         today=now.strftime("%A, %B %d, %Y at %I:%M %p"),
+        calendars=cal_str,
     )
 
 
@@ -64,61 +114,72 @@ def _extract_text(response) -> str:
     return "".join(b.text for b in response.content if b.type == "text")
 
 
-async def answer_question(question: str) -> str:
+async def answer_question(question: str) -> str | dict:
     """Send a calendar question to Claude with tool-use flow.
 
-    1. Send question with get_calendar_events tool available
-    2. Claude calls the tool with a date range
-    3. Fetch events, send back as tool result
-    4. Claude produces final answer
+    Returns either:
+        str — a text answer to display directly
+        dict — a pending event creation needing user confirmation, with keys:
+            calendar_name, summary, start_datetime, end_datetime, all_day,
+            location (optional), description (optional), confirmation_message
     """
     try:
-        system = _build_system_prompt()
+        import asyncio
+
+        calendar_names = await asyncio.to_thread(get_calendar_names)
+        system = _build_system_prompt(calendar_names)
         messages = [{"role": "user", "content": question}]
 
-        response = await client.messages.create(
-            model=MODEL,
-            max_tokens=1024,
-            system=system,
-            tools=[CALENDAR_TOOL],
-            messages=messages,
-        )
-
-        if response.stop_reason == "tool_use":
-            tool_block = next(b for b in response.content if b.type == "tool_use")
-            start_date = tool_block.input["start_date"]
-            end_date = tool_block.input["end_date"]
-
-            import asyncio
-
-            events = await asyncio.to_thread(get_events, start_date, end_date)
-            events_text = format_events_for_llm(events)
-
-            messages.append({"role": "assistant", "content": response.content})
-            messages.append(
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": tool_block.id,
-                            "content": events_text
-                            if events_text
-                            else "No events found in this date range.",
-                        }
-                    ],
-                }
-            )
-
-            final = await client.messages.create(
+        # Tool-use loop: keep going until we get a text response or a create request
+        max_rounds = 5
+        for _ in range(max_rounds):
+            response = await client.messages.create(
                 model=MODEL,
                 max_tokens=1024,
                 system=system,
-                tools=[CALENDAR_TOOL],
+                tools=TOOLS,
                 messages=messages,
             )
 
-            return _extract_text(final)
+            if response.stop_reason != "tool_use":
+                return _extract_text(response)
+
+            # Process all tool calls in this response
+            messages.append({"role": "assistant", "content": response.content})
+            tool_results = []
+
+            for block in response.content:
+                if block.type != "tool_use":
+                    continue
+
+                if block.name == "get_calendar_events":
+                    events = await asyncio.to_thread(
+                        get_events, block.input["start_date"], block.input["end_date"]
+                    )
+                    events_text = format_events_for_llm(events)
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": events_text or "No events found in this date range.",
+                    })
+
+                elif block.name == "create_calendar_event":
+                    # Don't execute — return as pending for confirmation
+                    pending = {
+                        "calendar_name": block.input["calendar_name"],
+                        "summary": block.input["summary"],
+                        "start_datetime": block.input["start_datetime"],
+                        "end_datetime": block.input["end_datetime"],
+                        "all_day": block.input["all_day"],
+                        "location": block.input.get("location"),
+                        "description": block.input.get("description"),
+                    }
+                    # Get Claude's confirmation message text from the response
+                    text = _extract_text(response)
+                    pending["confirmation_message"] = text
+                    return pending
+
+            messages.append({"role": "user", "content": tool_results})
 
         return _extract_text(response)
 

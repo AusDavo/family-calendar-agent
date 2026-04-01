@@ -14,7 +14,7 @@ from telegram.ext import (
     filters,
 )
 
-from calendar_client import get_events, CalendarError
+from calendar_client import get_events, create_event, CalendarError
 from llm import answer_question, summarize_events, LLMError
 
 logging.basicConfig(
@@ -75,10 +75,101 @@ async def week_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
 
 
+def _format_pending_event(pending: dict) -> str:
+    """Format a pending event into a confirmation message."""
+    start = datetime.fromisoformat(pending["start_datetime"])
+    end = datetime.fromisoformat(pending["end_datetime"])
+
+    if pending["all_day"]:
+        time_str = "All day"
+        if start.date() != end.date():
+            time_str += f" ({start.strftime('%a %b %-d')} – {end.strftime('%a %b %-d')})"
+        else:
+            time_str += f" ({start.strftime('%A, %b %-d')})"
+    else:
+        if start.date() == end.date():
+            time_str = f"{start.strftime('%A, %b %-d')} · {start.strftime('%-I:%M %p')} – {end.strftime('%-I:%M %p')}"
+        else:
+            time_str = f"{start.strftime('%a %b %-d %-I:%M %p')} – {end.strftime('%a %b %-d %-I:%M %p')}"
+
+    lines = [
+        f"*{pending['summary']}*",
+        time_str,
+        f"Calendar: {pending['calendar_name']}",
+    ]
+    if pending.get("location"):
+        lines.append(f"Location: {pending['location']}")
+    if pending.get("description"):
+        lines.append(f"Note: {pending['description']}")
+
+    lines.append("\nReply *yes* to confirm or *no* to cancel.")
+    return "\n".join(lines)
+
+
+_CONFIRM_WORDS = {"yes", "yep", "y", "confirm", "ok", "sure", "do it", "go ahead"}
+_CANCEL_WORDS = {"no", "nope", "n", "cancel", "nevermind", "never mind", "nah"}
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.chat.send_action("typing")
+    text = update.message.text.strip()
+    text_lower = text.lower()
+
+    # Check for pending event confirmation
+    pending = context.user_data.get("pending_event")
+    if pending:
+        if text_lower in _CONFIRM_WORDS:
+            try:
+                start = datetime.fromisoformat(pending["start_datetime"])
+                end = datetime.fromisoformat(pending["end_datetime"])
+                if start.tzinfo is None:
+                    start = start.replace(tzinfo=TIMEZONE)
+                if end.tzinfo is None:
+                    end = end.replace(tzinfo=TIMEZONE)
+
+                await asyncio.to_thread(
+                    create_event,
+                    calendar_name=pending["calendar_name"],
+                    summary=pending["summary"],
+                    start=start,
+                    end=end,
+                    all_day=pending["all_day"],
+                    location=pending.get("location"),
+                    description=pending.get("description"),
+                )
+                del context.user_data["pending_event"]
+                await update.message.reply_text(
+                    f"Done! *{pending['summary']}* added to {pending['calendar_name']}.",
+                    parse_mode=ParseMode.MARKDOWN,
+                )
+                return
+            except CalendarError as e:
+                logger.error("Error creating event: %s", e)
+                del context.user_data["pending_event"]
+                await update.message.reply_text(
+                    "Sorry, I couldn't create that event. Please try again."
+                )
+                return
+
+        elif text_lower in _CANCEL_WORDS:
+            del context.user_data["pending_event"]
+            await update.message.reply_text("Cancelled.")
+            return
+
+        else:
+            # New message clears pending event and processes normally
+            del context.user_data["pending_event"]
+
     try:
-        reply = await answer_question(update.message.text)
+        reply = await answer_question(text)
+
+        if isinstance(reply, dict):
+            # Pending event creation — ask for confirmation
+            context.user_data["pending_event"] = reply
+            confirmation = _format_pending_event(reply)
+            await update.message.reply_text(confirmation, parse_mode=ParseMode.MARKDOWN)
+            return
+
         await update.message.reply_text(reply, parse_mode=ParseMode.MARKDOWN)
     except (CalendarError, LLMError) as e:
         logger.error("Error handling message: %s", e)

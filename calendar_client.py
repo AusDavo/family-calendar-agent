@@ -98,6 +98,83 @@ def _parse_vevent(vevent, calendar_name: str) -> CalendarEvent:
     )
 
 
+def get_calendar_names() -> list[str]:
+    """Return the names of all accessible calendars."""
+    try:
+        client = _get_client()
+        calendars = _get_calendars(client)
+        return [c.name for c in calendars]
+    except Exception as e:
+        raise CalendarError(f"Failed to list calendars: {e}") from e
+
+
+def create_event(
+    calendar_name: str,
+    summary: str,
+    start: datetime,
+    end: datetime,
+    all_day: bool = False,
+    location: str | None = None,
+    description: str | None = None,
+) -> CalendarEvent:
+    """Create a new event on the specified calendar.
+
+    Args:
+        calendar_name: Name of the calendar to add the event to.
+        summary: Event title.
+        start: Event start (datetime for timed, date for all-day).
+        end: Event end.
+        all_day: Whether this is an all-day event.
+        location: Optional location string.
+        description: Optional description string.
+
+    Returns:
+        CalendarEvent representing the created event.
+    """
+    try:
+        client = _get_client()
+        calendars = _get_calendars(client)
+
+        cal = None
+        for c in calendars:
+            if c.name.lower() == calendar_name.lower():
+                cal = c
+                break
+
+        if cal is None:
+            available = [c.name for c in calendars]
+            raise CalendarError(
+                f"Calendar '{calendar_name}' not found. Available: {available}"
+            )
+
+        kwargs = {
+            "summary": summary,
+            "dtstart": start.date() if all_day else start,
+            "dtend": end.date() if all_day else end,
+        }
+        if location:
+            kwargs["location"] = location
+        if description:
+            kwargs["description"] = description
+
+        cal.add_event(**kwargs)
+
+        return CalendarEvent(
+            title=summary,
+            start=start,
+            end=end,
+            all_day=all_day,
+            location=location,
+            description=description,
+            calendar_name=cal.name,
+        )
+
+    except CalendarError:
+        raise
+    except Exception as e:
+        raise CalendarError(f"Failed to create event: {e}") from e
+
+
 def get_events(start_date: str, end_date: str) -> list[CalendarEvent]:
     """Fetch events between start_date and end_date (inclusive).
 
