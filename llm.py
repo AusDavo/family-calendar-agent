@@ -32,7 +32,9 @@ Rules:
 
 Event creation rules:
 - Available calendars: {calendars}
-- When asked to create an event, pick the most appropriate calendar based on context.
+- Writable calendars (create/move/delete allowed): {writable_calendars}
+- You can ONLY create, move, or delete events on writable calendars. Other calendars are read-only (subscribed from external providers).
+- When asked to create an event, pick the most appropriate writable calendar based on context.
 - If no end time is given, default to 1 hour duration for timed events.
 - For all-day events, set all_day to true and use date-only start/end.
 - Always call the create_calendar_event tool — never just describe what you would create.
@@ -197,10 +199,17 @@ def _build_system_prompt(calendar_names: list[str] | None = None) -> str:
         for i in range(7)
     )
 
+    writable_names = os.environ.get("WRITABLE_CALENDARS", "").strip()
+    if writable_names:
+        writable_str = writable_names
+    else:
+        writable_str = cal_str  # default: all calendars are writable
+
     return SYSTEM_PROMPT.format(
         timezone=str(TIMEZONE),
         today=now.strftime("%A, %B %d, %Y at %I:%M %p %Z"),
         calendars=cal_str,
+        writable_calendars=writable_str,
         this_week=week_ref,
         next_week=next_week_ref,
     )
