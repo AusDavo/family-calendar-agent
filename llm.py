@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo
 
 from anthropic import AsyncAnthropic
 
-from calendar_client import get_events, format_events_for_llm, get_calendar_names, CalendarEvent
+from calendar_client import get_events, format_events_for_llm, get_calendar_names, delete_event, CalendarEvent
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +33,12 @@ Event creation rules:
 - If no end time is given, default to 1 hour duration for timed events.
 - For all-day events, set all_day to true and use date-only start/end.
 - Always call the create_calendar_event tool — never just describe what you would create.
+
+Move / reschedule / cancel rules:
+- To MOVE or RESCHEDULE an event: first fetch events with get_calendar_events to find the exact title, calendar, and date. Then call BOTH delete_calendar_event and create_calendar_event in the same response — the system will present this as a single move confirmation to the user.
+- To CANCEL an event: fetch events to find it, then delete it with delete_calendar_event.
+- Always use get_calendar_events first to find the exact event details before deleting or moving.
+- The summary passed to delete_calendar_event must match the event title exactly (case-insensitive).
 
 Memory rules:
 - You have a long-term memory store for family context.
@@ -100,6 +106,29 @@ CREATE_EVENT_TOOL = {
     },
 }
 
+DELETE_EVENT_TOOL = {
+    "name": "delete_calendar_event",
+    "description": "Delete a calendar event by title and date. Use this to cancel events or as the first step when moving/rescheduling.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "calendar_name": {
+                "type": "string",
+                "description": "Name of the calendar containing the event",
+            },
+            "summary": {
+                "type": "string",
+                "description": "Exact event title to match",
+            },
+            "start_date": {
+                "type": "string",
+                "description": "Date the event is on, YYYY-MM-DD format",
+            },
+        },
+        "required": ["calendar_name", "summary", "start_date"],
+    },
+}
+
 STORE_MEMORY_TOOL = {
     "name": "store_memory",
     "description": "Store a piece of information for long-term recall. Use this to remember family context, preferences, recurring activities, meal plans, or anything the user shares that might be useful later.",
@@ -139,7 +168,7 @@ SEARCH_MEMORY_TOOL = {
     },
 }
 
-TOOLS = [CALENDAR_TOOL, CREATE_EVENT_TOOL, STORE_MEMORY_TOOL, SEARCH_MEMORY_TOOL]
+TOOLS = [CALENDAR_TOOL, CREATE_EVENT_TOOL, DELETE_EVENT_TOOL, STORE_MEMORY_TOOL, SEARCH_MEMORY_TOOL]
 
 
 class LLMError(Exception):
@@ -151,7 +180,7 @@ def _build_system_prompt(calendar_names: list[str] | None = None) -> str:
     cal_str = ", ".join(calendar_names) if calendar_names else "(unknown)"
     return SYSTEM_PROMPT.format(
         timezone=str(TIMEZONE),
-        today=now.strftime("%A, %B %d, %Y at %I:%M %p"),
+        today=now.strftime("%A, %B %d, %Y at %I:%M %p %Z"),
         calendars=cal_str,
     )
 
@@ -182,7 +211,7 @@ async def answer_question(question: str, history: list[dict] | None = None) -> s
         messages.append({"role": "user", "content": question})
 
         # Tool-use loop: keep going until we get a text response or a create request
-        max_rounds = 5
+        max_rounds = 10
         for _ in range(max_rounds):
             response = await client.messages.create(
                 model=MODEL,
@@ -198,6 +227,8 @@ async def answer_question(question: str, history: list[dict] | None = None) -> s
             # Process all tool calls in this response
             messages.append({"role": "assistant", "content": response.content})
             tool_results = []
+            pending_delete = None
+            pending_create = None
 
             for block in response.content:
                 if block.type != "tool_use":
@@ -238,9 +269,15 @@ async def answer_question(question: str, history: list[dict] | None = None) -> s
                         "content": result,
                     })
 
+                elif block.name == "delete_calendar_event":
+                    pending_delete = {
+                        "calendar_name": block.input["calendar_name"],
+                        "summary": block.input["summary"],
+                        "start_date": block.input["start_date"],
+                    }
+
                 elif block.name == "create_calendar_event":
-                    # Don't execute — return as pending for confirmation
-                    pending = {
+                    pending_create = {
                         "calendar_name": block.input["calendar_name"],
                         "summary": block.input["summary"],
                         "start_datetime": block.input["start_datetime"],
@@ -249,10 +286,25 @@ async def answer_question(question: str, history: list[dict] | None = None) -> s
                         "location": block.input.get("location"),
                         "description": block.input.get("description"),
                     }
-                    # Get Claude's confirmation message text from the response
-                    text = _extract_text(response)
-                    pending["confirmation_message"] = text
-                    return pending
+
+            # If we have write actions, return them for confirmation
+            if pending_delete and pending_create:
+                # Move operation: delete old + create new
+                pending = {
+                    "action": "move",
+                    "delete": pending_delete,
+                    "create": pending_create,
+                    "confirmation_message": _extract_text(response),
+                }
+                return pending
+            elif pending_delete:
+                pending = {"action": "delete", **pending_delete}
+                pending["confirmation_message"] = _extract_text(response)
+                return pending
+            elif pending_create:
+                pending = {"action": "create", **pending_create}
+                pending["confirmation_message"] = _extract_text(response)
+                return pending
 
             messages.append({"role": "user", "content": tool_results})
 

@@ -15,8 +15,8 @@ Phase one (read-only calendar queries) is complete. What's next:
 
 ## Phase 3 — Create & manage events
 - [x] Create events via chat — "Add dentist Thursday at 2pm"
-- [ ] Move / reschedule events — "Move Friday's meeting to Monday"
-- [ ] Cancel events — "Cancel tomorrow's lunch"
+- [x] Move / reschedule events — "Move Friday's meeting to Monday"
+- [x] Cancel events — "Cancel tomorrow's lunch"
 - [ ] Confirmation step before writes — bot confirms details before saving
 
 ## Phase 4 — Family coordination

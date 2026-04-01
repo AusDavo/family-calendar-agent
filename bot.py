@@ -14,7 +14,7 @@ from telegram.ext import (
     filters,
 )
 
-from calendar_client import get_events, create_event, CalendarError
+from calendar_client import get_events, create_event, delete_event, CalendarError
 from llm import answer_question, summarize_events, digest_summary, LLMError
 
 logging.basicConfig(
@@ -102,8 +102,42 @@ async def send_digest(context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.error("Error sending digest to %s: %s", chat_id, e)
 
 
-def _format_pending_event(pending: dict) -> str:
-    """Format a pending event into a confirmation message."""
+def _format_pending(pending: dict) -> str:
+    """Format a pending action into a confirmation message."""
+    action = pending.get("action", "create")
+
+    if action == "delete":
+        lines = [
+            f"Delete *{pending['summary']}*",
+            f"Date: {pending['start_date']}",
+            f"Calendar: {pending['calendar_name']}",
+            "\nReply *yes* to confirm or *no* to cancel.",
+        ]
+        return "\n".join(lines)
+
+    if action == "move":
+        old = pending["delete"]
+        new = pending["create"]
+        new_start = datetime.fromisoformat(new["start_datetime"])
+        new_end = datetime.fromisoformat(new["end_datetime"])
+        if new.get("all_day"):
+            new_time = f"All day ({new_start.strftime('%A, %b %-d')})"
+        elif new_start.date() == new_end.date():
+            new_time = f"{new_start.strftime('%A, %b %-d')} · {new_start.strftime('%-I:%M %p')} – {new_end.strftime('%-I:%M %p')}"
+        else:
+            new_time = f"{new_start.strftime('%a %b %-d %-I:%M %p')} – {new_end.strftime('%a %b %-d %-I:%M %p')}"
+        lines = [
+            f"Move *{old['summary']}*",
+            f"From: {old['start_date']}",
+            f"To: {new_time}",
+            f"Calendar: {new['calendar_name']}",
+        ]
+        if new.get("location"):
+            lines.append(f"Location: {new['location']}")
+        lines.append("\nReply *yes* to confirm or *no* to cancel.")
+        return "\n".join(lines)
+
+    # Create action
     start = datetime.fromisoformat(pending["start_datetime"])
     end = datetime.fromisoformat(pending["end_datetime"])
 
@@ -142,39 +176,103 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     text = update.message.text.strip()
     text_lower = text.lower()
 
-    # Check for pending event confirmation
+    # Check for pending action confirmation
     pending = context.user_data.get("pending_event")
     if pending:
         if text_lower in _CONFIRM_WORDS:
+            action = pending.get("action", "create")
             try:
-                start = datetime.fromisoformat(pending["start_datetime"])
-                end = datetime.fromisoformat(pending["end_datetime"])
-                if start.tzinfo is None:
-                    start = start.replace(tzinfo=TIMEZONE)
-                if end.tzinfo is None:
-                    end = end.replace(tzinfo=TIMEZONE)
+                if action == "move":
+                    old = pending["delete"]
+                    new = pending["create"]
+                    # Delete the old event
+                    deleted = await asyncio.to_thread(
+                        delete_event,
+                        calendar_name=old["calendar_name"],
+                        summary=old["summary"],
+                        start_date=old["start_date"],
+                    )
+                    if not deleted:
+                        del context.user_data["pending_event"]
+                        await update.message.reply_text(
+                            f"Couldn't find *{old['summary']}* to move. It may have already been removed.",
+                            parse_mode=ParseMode.MARKDOWN,
+                        )
+                        return
+                    # Create the new event
+                    start = datetime.fromisoformat(new["start_datetime"])
+                    end = datetime.fromisoformat(new["end_datetime"])
+                    if start.tzinfo is None:
+                        start = start.replace(tzinfo=TIMEZONE)
+                    if end.tzinfo is None:
+                        end = end.replace(tzinfo=TIMEZONE)
+                    await asyncio.to_thread(
+                        create_event,
+                        calendar_name=new["calendar_name"],
+                        summary=new["summary"],
+                        start=start,
+                        end=end,
+                        all_day=new.get("all_day", False),
+                        location=new.get("location"),
+                        description=new.get("description"),
+                    )
+                    del context.user_data["pending_event"]
+                    await update.message.reply_text(
+                        f"Done! *{new['summary']}* moved to its new time.",
+                        parse_mode=ParseMode.MARKDOWN,
+                    )
+                    return
 
-                await asyncio.to_thread(
-                    create_event,
-                    calendar_name=pending["calendar_name"],
-                    summary=pending["summary"],
-                    start=start,
-                    end=end,
-                    all_day=pending["all_day"],
-                    location=pending.get("location"),
-                    description=pending.get("description"),
-                )
-                del context.user_data["pending_event"]
-                await update.message.reply_text(
-                    f"Done! *{pending['summary']}* added to {pending['calendar_name']}.",
-                    parse_mode=ParseMode.MARKDOWN,
-                )
-                return
+                elif action == "delete":
+                    deleted = await asyncio.to_thread(
+                        delete_event,
+                        calendar_name=pending["calendar_name"],
+                        summary=pending["summary"],
+                        start_date=pending["start_date"],
+                    )
+                    del context.user_data["pending_event"]
+                    if deleted:
+                        await update.message.reply_text(
+                            f"Done! *{pending['summary']}* has been deleted.",
+                            parse_mode=ParseMode.MARKDOWN,
+                        )
+                    else:
+                        await update.message.reply_text(
+                            f"Couldn't find *{pending['summary']}* to delete. It may have already been removed.",
+                            parse_mode=ParseMode.MARKDOWN,
+                        )
+                    return
+
+                else:  # create
+                    start = datetime.fromisoformat(pending["start_datetime"])
+                    end = datetime.fromisoformat(pending["end_datetime"])
+                    if start.tzinfo is None:
+                        start = start.replace(tzinfo=TIMEZONE)
+                    if end.tzinfo is None:
+                        end = end.replace(tzinfo=TIMEZONE)
+
+                    await asyncio.to_thread(
+                        create_event,
+                        calendar_name=pending["calendar_name"],
+                        summary=pending["summary"],
+                        start=start,
+                        end=end,
+                        all_day=pending["all_day"],
+                        location=pending.get("location"),
+                        description=pending.get("description"),
+                    )
+                    del context.user_data["pending_event"]
+                    await update.message.reply_text(
+                        f"Done! *{pending['summary']}* added to {pending['calendar_name']}.",
+                        parse_mode=ParseMode.MARKDOWN,
+                    )
+                    return
+
             except CalendarError as e:
-                logger.error("Error creating event: %s", e)
+                logger.error("Error executing %s: %s", action, e)
                 del context.user_data["pending_event"]
                 await update.message.reply_text(
-                    "Sorry, I couldn't create that event. Please try again."
+                    f"Sorry, I couldn't {action} that event. Please try again."
                 )
                 return
 
@@ -195,7 +293,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         if isinstance(reply, dict):
             # Pending event creation — ask for confirmation
             context.user_data["pending_event"] = reply
-            confirmation = _format_pending_event(reply)
+            confirmation = _format_pending(reply)
             # Add exchange to history
             history.append({"role": "user", "content": text})
             history.append({"role": "assistant", "content": confirmation})

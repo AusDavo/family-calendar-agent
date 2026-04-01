@@ -175,6 +175,58 @@ def create_event(
         raise CalendarError(f"Failed to create event: {e}") from e
 
 
+def delete_event(
+    calendar_name: str,
+    summary: str,
+    start_date: str,
+) -> bool:
+    """Delete an event by matching calendar, title, and start date.
+
+    Args:
+        calendar_name: Name of the calendar containing the event.
+        summary: Event title to match (case-insensitive).
+        start_date: Date the event starts on, YYYY-MM-DD format.
+
+    Returns:
+        True if an event was deleted, False if not found.
+    """
+    try:
+        client = _get_client()
+        calendars = _get_calendars(client)
+
+        cal = None
+        for c in calendars:
+            if c.name.lower() == calendar_name.lower():
+                cal = c
+                break
+
+        if cal is None:
+            available = [c.name for c in calendars]
+            raise CalendarError(
+                f"Calendar '{calendar_name}' not found. Available: {available}"
+            )
+
+        start = datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=TIMEZONE)
+        end = start.replace(hour=23, minute=59, second=59)
+
+        results = cal.date_search(start=start, end=end, expand=False)
+        for result in results:
+            ical = iCalCalendar.from_ical(result.data)
+            for component in ical.walk():
+                if component.name == "VEVENT":
+                    event_summary = str(component.get("SUMMARY", ""))
+                    if event_summary.lower() == summary.lower():
+                        result.delete()
+                        return True
+
+        return False
+
+    except CalendarError:
+        raise
+    except Exception as e:
+        raise CalendarError(f"Failed to delete event: {e}") from e
+
+
 def get_events(start_date: str, end_date: str) -> list[CalendarEvent]:
     """Fetch events between start_date and end_date (inclusive).
 
