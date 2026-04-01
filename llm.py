@@ -209,3 +209,40 @@ async def summarize_events(events: list[CalendarEvent], context: str) -> str:
 
     except Exception as e:
         raise LLMError(f"Failed to summarize events: {e}") from e
+
+
+async def digest_summary(
+    today_events: list[CalendarEvent], week_events: list[CalendarEvent]
+) -> str:
+    """Generate a morning digest: today's events + rest-of-week preview."""
+    try:
+        system = _build_system_prompt()
+        today_text = format_events_for_llm(today_events)
+        week_text = format_events_for_llm(week_events)
+
+        parts = []
+        if today_text:
+            parts.append(f"Today's events:\n{today_text}")
+        else:
+            parts.append("No events today.")
+        if week_text:
+            parts.append(f"Rest of the week:\n{week_text}")
+        else:
+            parts.append("Nothing else scheduled this week.")
+
+        content = (
+            "\n\n".join(parts)
+            + "\n\nGive a concise morning briefing. Lead with today, then preview the rest of the week."
+        )
+
+        response = await client.messages.create(
+            model=MODEL,
+            max_tokens=1024,
+            system=system,
+            messages=[{"role": "user", "content": content}],
+        )
+
+        return _extract_text(response)
+
+    except Exception as e:
+        raise LLMError(f"Failed to generate digest: {e}") from e

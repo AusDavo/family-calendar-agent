@@ -15,7 +15,7 @@ from telegram.ext import (
 )
 
 from calendar_client import get_events, create_event, CalendarError
-from llm import answer_question, summarize_events, LLMError
+from llm import answer_question, summarize_events, digest_summary, LLMError
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -73,6 +73,33 @@ async def week_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await update.message.reply_text(
             "Sorry, I had trouble checking your calendar. Please try again."
         )
+
+
+async def send_digest(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Send the morning digest to a user."""
+    chat_id = context.job.chat_id
+    try:
+        now = datetime.now(TIMEZONE)
+        today_str = now.strftime("%Y-%m-%d")
+
+        # Rest of week: tomorrow through Sunday
+        tomorrow = now + timedelta(days=1)
+        days_until_sunday = 6 - now.weekday()
+        if days_until_sunday <= 0:
+            days_until_sunday += 7
+        sunday = now + timedelta(days=days_until_sunday)
+
+        today_events = await asyncio.to_thread(get_events, today_str, today_str)
+        week_events = await asyncio.to_thread(
+            get_events, tomorrow.strftime("%Y-%m-%d"), sunday.strftime("%Y-%m-%d")
+        )
+
+        reply = await digest_summary(today_events, week_events)
+        await context.bot.send_message(
+            chat_id=chat_id, text=reply, parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception as e:
+        logger.error("Error sending digest to %s: %s", chat_id, e)
 
 
 def _format_pending_event(pending: dict) -> str:
@@ -206,6 +233,17 @@ def main() -> None:
         MessageHandler(
             filters.TEXT & ~filters.COMMAND & allowed_filter, handle_message
         )
+    )
+
+    # Schedule morning digest for each allowed user
+    from datetime import time as dt_time
+    digest_dt = dt_time(hour=6, minute=0, tzinfo=TIMEZONE)
+    for uid in ALLOWED_USERS:
+        app.job_queue.run_daily(
+            send_digest, time=digest_dt, chat_id=uid, name=f"digest_{uid}"
+        )
+    logger.info(
+        "Morning digest scheduled at %s for %d user(s)", digest_dt, len(ALLOWED_USERS)
     )
 
     logger.info("Bot starting in polling mode...")

@@ -3,12 +3,12 @@
 Phase one (read-only calendar queries) is complete. What's next:
 
 ## Phase 2 — Daily life
-- [ ] Morning digest — scheduled summary of today's events sent to each user
+- [x] Morning digest — scheduled summary of today's events sent to each user
 - [ ] Proactive reminders — configurable alerts before events
 - [ ] Multi-tool-call support — let Claude call the calendar tool multiple times per question
 
 ## Phase 3 — Create & manage events
-- [ ] Create events via chat — "Add dentist Thursday at 2pm"
+- [x] Create events via chat — "Add dentist Thursday at 2pm"
 - [ ] Move / reschedule events — "Move Friday's meeting to Monday"
 - [ ] Cancel events — "Cancel tomorrow's lunch"
 - [ ] Confirmation step before writes — bot confirms details before saving
