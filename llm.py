@@ -160,8 +160,12 @@ def _extract_text(response) -> str:
     return "".join(b.text for b in response.content if b.type == "text")
 
 
-async def answer_question(question: str) -> str | dict:
+async def answer_question(question: str, history: list[dict] | None = None) -> str | dict:
     """Send a calendar question to Claude with tool-use flow.
+
+    Args:
+        question: The user's message.
+        history: Prior conversation turns (list of message dicts) for context.
 
     Returns either:
         str — a text answer to display directly
@@ -174,7 +178,8 @@ async def answer_question(question: str) -> str | dict:
 
         calendar_names = await asyncio.to_thread(get_calendar_names)
         system = _build_system_prompt(calendar_names)
-        messages = [{"role": "user", "content": question}]
+        messages = list(history) if history else []
+        messages.append({"role": "user", "content": question})
 
         # Tool-use loop: keep going until we get a text response or a create request
         max_rounds = 5

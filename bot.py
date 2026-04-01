@@ -188,14 +188,26 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             del context.user_data["pending_event"]
 
     try:
-        reply = await answer_question(text)
+        # Maintain conversation history for context
+        history = context.user_data.setdefault("history", [])
+        reply = await answer_question(text, history=history)
 
         if isinstance(reply, dict):
             # Pending event creation — ask for confirmation
             context.user_data["pending_event"] = reply
             confirmation = _format_pending_event(reply)
+            # Add exchange to history
+            history.append({"role": "user", "content": text})
+            history.append({"role": "assistant", "content": confirmation})
             await update.message.reply_text(confirmation, parse_mode=ParseMode.MARKDOWN)
             return
+
+        # Add exchange to history
+        history.append({"role": "user", "content": text})
+        history.append({"role": "assistant", "content": reply})
+        # Keep last 20 turns (10 exchanges) to avoid token bloat
+        if len(history) > 20:
+            context.user_data["history"] = history[-20:]
 
         await update.message.reply_text(reply, parse_mode=ParseMode.MARKDOWN)
     except (CalendarError, LLMError) as e:
